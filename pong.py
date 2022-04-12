@@ -5,50 +5,39 @@ from sys import exit
 from time import perf_counter
 from random import choice
 
-pygame.mixer.pre_init(44100, -16, 2, 64)
 pygame.init()
 
-WINSIZE = WIDTH, HEIGHT = 854, 480
-FONT = pygame.font.Font(None, 30)
+WIDTH, HEIGHT = 1024, 576
+FONT = pygame.font.Font(None, 35)
 
 BLACK_COLOR = (24, 24, 24)
 WHITE_COLOR = (200, 200, 200)
 
-class Text:
-    def __init__(self, info, pos):
-        win = pygame.display.get_surface()
-        info_surf = FONT.render(str(info), True, WHITE_COLOR)
-        info_rect = info_surf.get_rect(midbottom = pos)
-        pygame.draw.rect(win, BLACK_COLOR, info_rect)
-        win.blit(info_surf, info_rect)
-
-class Audio:
-    def __init__(self, path):
-        self.audio = pygame.mixer.Sound(path)
-
-    def play(self, volume=1):
-        self.audio.play()
-
 class Paddle(pygame.sprite.Sprite):
-    def __init__(self, pos, type, group):
+    def __init__(self, pos_x, group, num):
         super().__init__(group)
-        self.type = type
-        self.image = pygame.Surface((14, HEIGHT // 5))
+        self.type = "PADDLE"
+        self.image = pygame.Surface((WIDTH // 64, HEIGHT // 5))
         self.image.fill(WHITE_COLOR)
-        self.rect = self.image.get_rect(center = pos)
+        self.rect = self.image.get_rect(center = (pos_x, HEIGHT // 2))
+        self.old_rect = self.rect.copy()
         self.pos = pygame.math.Vector2(self.rect.topleft)
         self.move = 0
-        self.speed = 320
+        self.speed = 400
+        self.score = 0
+        self.num = num
+
+        self.win = pygame.display.get_surface()
 
     def input(self):
-        keys = pygame.key.get_pressed()
+        key = pygame.key.get_pressed()
 
-        if self.type == "one":
-            UP = keys[pygame.K_w]
-            DOWN = keys[pygame.K_s]
-        else:
-            UP = keys[pygame.K_UP]
-            DOWN = keys[pygame.K_DOWN]
+        if self.num == "one":
+            UP = key[pygame.K_w]
+            DOWN = key[pygame.K_s]
+        if self.num == "two":
+            UP = key[pygame.K_UP]
+            DOWN = key[pygame.K_DOWN]
 
         if UP:
             self.move = -1
@@ -58,6 +47,7 @@ class Paddle(pygame.sprite.Sprite):
             self.move = 0
 
     def movement(self, dt):
+        self.old_rect = self.rect.copy()
         self.pos.y += self.move * self.speed * dt
         self.rect.y = round(self.pos.y)
 
@@ -69,103 +59,172 @@ class Paddle(pygame.sprite.Sprite):
             self.rect.bottom = HEIGHT
             self.pos.y = self.rect.y
 
+    def display_score(self):
+        score_surf = FONT.render(str(self.score), True, WHITE_COLOR)
+        score_rect = score_surf.get_rect()
+
+        if self.num == "one":
+            score_rect.center = (WIDTH // 2 - 100, HEIGHT // 2)
+        if self.num == "two":
+            score_rect.center = (WIDTH // 2 + 100, HEIGHT // 2)
+
+        self.win.blit(score_surf, score_rect)
+
     def update(self, dt):
         self.input()
         self.movement(dt)
         self.constraint()
+        self.display_score()
 
 class Ball(pygame.sprite.Sprite):
-    def __init__(self, group, paddles):
+    def __init__(self, group):
         super().__init__(group)
+        self.type = "BALL"
         self.image = pygame.image.load("graphics/ball.png").convert_alpha()
-        self.image.set_colorkey((255, 255, 255))
+        self.image.set_colorkey("white")
         self.rect = self.image.get_rect(center = (WIDTH // 2, HEIGHT // 2))
+        self.old_rect = self.rect.copy()
         self.pos = pygame.math.Vector2(self.rect.topleft)
         self.move = pygame.math.Vector2(choice((1, -1)), choice((1, -1)))
-        self.speed = 360
-        self.state = "static"
-        self.ball_time = 0
-        self.score_one = 0
-        self.score_two = 0
-        self.paddles = paddles
+        self.speed = 450
+        self.active = False
+        self.reset_time = 0
+        self.num = 0
 
-    def movement(self, dt):
-        if self.state == "moving":
+        self.all_sprites = group
+        self.paddles = []
+        self.paddle_one, self.paddle_two = None, None
+        self.win = pygame.display.get_surface()
+
+    def get_overlap(self):
+        overlap = []
+        for spr in self.all_sprites:
+            if self.rect != spr.rect:
+                self.paddles.append(spr)
+                if self.rect.colliderect(spr.rect):
+                    overlap.append(spr)
+        return overlap
+
+    def get_paddles(self):
+        for paddle in self.paddles:
+            if paddle.num == "one":
+                self.paddle_one = paddle
+            if paddle.num == "two":
+                self.paddle_two = paddle
+
+    def movement_x(self, dt):
+        if self.active:
             self.pos.x += self.move.x * self.speed * dt
             self.rect.x = round(self.pos.x)
+
+    def movement_y(self, dt):
+        if self.active:
             self.pos.y += self.move.y * self.speed * dt
             self.rect.y = round(self.pos.y)
 
-    def constraint(self):
-        if self.rect.top < 0 or self.rect.bottom > HEIGHT:
-            Audio("sfx/wall.mp3").play()
-            self.move.y *= -1
-        if self.rect.left < 0:
-            Audio("sfx/score.mp3").play()
-            self.reset_ball()
-            self.score_two += 1
+    def constraint_x(self):
         if self.rect.right > WIDTH:
-            Audio("sfx/score.mp3").play()
-            self.reset_ball()
-            self.score_one += 1
+            self.rect.right = WIDTH
+            self.pos.x = self.rect.x
+            self.reset_time = pygame.time.get_ticks()
+            self.active = False
+            self.paddle_one.score += 1
+        if self.rect.left < 0:
+            self.rect.left = 0
+            self.pos.x = self.rect.x
+            self.reset_time = pygame.time.get_ticks()
+            self.active = False
+            self.paddle_two.score += 1
 
-    def reset_ball(self):
-        self.ball_time = pygame.time.get_ticks()
-        self.rect.center = (WIDTH // 2, HEIGHT // 2)
-        self.pos = pygame.math.Vector2(self.rect.topleft)
-        self.move = pygame.math.Vector2(choice((1, -1)), choice((1, -1)))
-        self.state = "static"
+    def constraint_y(self):
+        if self.rect.top < 0:
+            self.rect.top = 0
+            self.pos.y = self.rect.y
+            self.move.y *= -1
+        if self.rect.bottom > HEIGHT:
+            self.rect.bottom = HEIGHT
+            self.pos.y = self.rect.y
+            self.move.y *= -1
 
-    def draw_timer(self):
+    def collision(self, dt):
+        self.old_rect = self.rect.copy()
+
+        self.movement_x(dt)
+        overlap = self.get_overlap()
+        for paddle in overlap:
+            if self.rect.right >= paddle.rect.left and self.old_rect.right <= paddle.old_rect.left:
+                self.rect.right = paddle.rect.left
+                self.pos.x = self.rect.x
+                self.move.x *= -1
+            if self.rect.left <= paddle.rect.right and self.old_rect.left >= paddle.old_rect.right:
+                self.rect.left = paddle.rect.right
+                self.pos.x = self.rect.x
+                self.move.x *= -1
+        self.constraint_x()
+
+        self.movement_y(dt)
+        overlap = self.get_overlap()
+        for paddle in overlap:
+            if self.rect.bottom >= paddle.rect.top and self.old_rect.bottom <= paddle.old_rect.top:
+                self.rect.bottom = paddle.rect.top
+                self.pos.y = self.rect.y
+                self.move.y *= -1
+            if self.rect.top <= paddle.rect.bottom and self.old_rect.top >= paddle.old_rect.bottom:
+                self.rect.top = paddle.rect.bottom
+                self.pos.y = self.rect.y
+                self.move.y *= -1
+        self.constraint_y()
+
+    def not_active(self):
+        if not self.active:
+            self.rect.center = (WIDTH // 2, HEIGHT // 2)
+            self.pos = pygame.math.Vector2(self.rect.topleft)
+            self.move = pygame.math.Vector2(choice((1, -1)), choice((1, -1)))
+
+    def timer(self):
         current_time = pygame.time.get_ticks()
 
-        if (current_time - self.ball_time) <= 1000:
-            Text("3", (WIDTH // 2 - 1, HEIGHT // 2 - 20))
-        elif 1000 < (current_time - self.ball_time) <= 2000:
-            Text("2", (WIDTH // 2 - 1, HEIGHT // 2 - 20))
-        elif 2000 < (current_time - self.ball_time) <= 3000:
-            Text("1", (WIDTH // 2 - 1, HEIGHT // 2 - 20))
-        elif (current_time - self.ball_time) > 3000:
-            self.state = "moving"
+        if not self.active:
+            if current_time - self.reset_time < 900:
+                self.num = 3
+            elif 900 <= current_time - self.reset_time < 1800:
+                self.num = 2
+            elif 1800 <= current_time - self.reset_time < 2700:
+                self.num = 1
+            else:
+                self.active = True
 
-    def draw_score(self):
-        Text(self.score_one, (WIDTH // 2 - 100, HEIGHT // 2 + 10))
-        Text(self.score_two, (WIDTH // 2 + 100, HEIGHT // 2 + 10))
+    def display_time(self):
+        time_surf = FONT.render(str(self.num), True, WHITE_COLOR)
+        time_rect = time_surf.get_rect(center = (WIDTH // 2, HEIGHT // 2 - 50))
 
-    def collision(self):
-        if pygame.sprite.spritecollide(self, self.paddles, False):
-            Audio("sfx/paddle.mp3").play()
-            paddle = pygame.sprite.spritecollide(self, self.paddles, False)[0].rect
-            if abs(self.rect.right - paddle.left) < 10 and self.move.x != -1:
-                self.move.x *= -1
-            if abs(self.rect.left - paddle.right) < 10 and self.move.x != 1:
-                self.move.x *= -1
-            if abs(self.rect.top - paddle.bottom) < 10 and self.move.y != 1:
-                self.move.y *= -1
-            if abs(self.rect.bottom - paddle.top) < 10 and self.move.y != -1:
-                self.move.y *= -1
+        if not self.active:
+            pygame.draw.rect(self.win, BLACK_COLOR, time_rect)
+            self.win.blit(time_surf, time_rect)
 
     def update(self, dt):
-        self.movement(dt)
-        self.constraint()
-        self.collision()
+        self.collision(dt)
+        self.get_paddles()
+        self.not_active()
+        self.timer()
+        self.display_time()
 
 class Game:
     def __init__(self):
         self.pf = perf_counter()
-        self.win = pygame.display.set_mode(WINSIZE)
+        self.win = pygame.display.set_mode((WIDTH, HEIGHT))
+        
         pygame.display.set_caption("Pong")
+        
+        icon_image = pygame.image.load("graphics/icon.png").convert_alpha()
+        icon_image.set_colorkey("white")
+        pygame.display.set_icon(icon_image)
+        
+        self.all_sprites = pygame.sprite.Group()
 
-        icon = pygame.image.load("graphics/icon.png").convert_alpha()
-        icon.set_colorkey((255, 255, 255))
-        pygame.display.set_icon(icon)
-
-        self.paddles = pygame.sprite.Group()
-        self.ball = pygame.sprite.GroupSingle()
-
-        player_one = Paddle((16, HEIGHT // 2), "one", self.paddles)
-        player_two = Paddle((WIDTH - 16, HEIGHT // 2), "two", self.paddles)
-        ball = Ball(self.ball, self.paddles)
+        paddle_one = Paddle(16, self.all_sprites, "one")
+        paddle_two = Paddle(WIDTH - 16, self.all_sprites, "two")
+        ball = Ball(self.all_sprites)
 
     def run(self):
         while True:
@@ -180,17 +239,13 @@ class Game:
                     if event.key == pygame.K_ESCAPE:
                         pygame.quit()
                         exit()
-
-            self.ball.update(dt)
-            self.paddles.update(dt)
-
+            
             self.win.fill(BLACK_COLOR)
-            pygame.draw.line(self.win, WHITE_COLOR, (WIDTH // 2 - 1, 0), (WIDTH // 2 - 1, HEIGHT))
-            self.ball.draw(self.win)
-            self.paddles.draw(self.win)
-            self.ball.sprite.draw_timer()
-            self.ball.sprite.draw_score()
+            pygame.draw.line(self.win, WHITE_COLOR, (WIDTH // 2, 0), (WIDTH // 2, HEIGHT))
 
+            self.all_sprites.update(dt)
+            self.all_sprites.draw(self.win)
+            
             pygame.display.update()
 
 game = Game()
